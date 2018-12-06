@@ -1,0 +1,121 @@
+From b65fcb700f8eefb1890d13545f9b361a721272fd Mon Sep 17 00:00:00 2001
+From: Mihai Todor <todormihai@gmail.com>
+Date: Tue, 13 Nov 2018 19:39:25 +0000
+Subject: [PATCH] Rename TestClient_Auth to TestClient_IPs and mock properly
+ (#231)
+
+---
+ cloudflare_test.go | 25 -----------------
+ ips_test.go        | 67 ++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 67 insertions(+), 25 deletions(-)
+ create mode 100644 ips_test.go
+
+diff --git a/cloudflare_test.go b/cloudflare_test.go
+index 872ace5..80ad841 100644
+--- a/cloudflare_test.go
++++ b/cloudflare_test.go
+@@ -94,31 +94,6 @@ func TestClient_Headers(t *testing.T) {
+ 	teardown()
+ }
+ 
+-func TestClient_Auth(t *testing.T) {
+-	setup()
+-	defer teardown()
+-
+-	mux.HandleFunc("/ips", func(w http.ResponseWriter, r *http.Request) {
+-		assert.Equal(t, "GET", r.Method, "Expected method 'GET', got %s", r.Method)
+-		assert.Equal(t, "cloudflare@example.com", r.Header.Get("X-Auth-Email"))
+-		assert.Equal(t, "deadbeef", r.Header.Get("X-Auth-Token"))
+-		w.Header().Set("Content-Type", "application/json")
+-		fmt.Fprintf(w, `{
+-  "success": true,
+-  "errors": [],
+-  "messages": [],
+-  "response": {
+-    "ipv4_cidrs": ["199.27.128.0/21"],
+-    "ipv6_cidrs": ["199.27.128.0/21"]
+-  }
+-}`)
+-	})
+-
+-	_, err := IPs()
+-
+-	assert.NoError(t, err)
+-}
+-
+ func TestClient_RetryCanSucceedAfterErrors(t *testing.T) {
+ 	setup(UsingRetryPolicy(2, 0, 1))
+ 	defer teardown()
+diff --git a/ips_test.go b/ips_test.go
+new file mode 100644
+index 0000000..68b79e6
+--- /dev/null
++++ b/ips_test.go
+@@ -0,0 +1,67 @@
++package cloudflare
++
++import (
++	"fmt"
++	"net/http"
++	"net/http/httptest"
++	"net/url"
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++)
++
++type MockTransport struct {
++	http.Transport
++	Server *httptest.Server
++	Path   string
++}
++
++func (m *MockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
++	url, err := url.Parse(m.Server.URL + m.Path)
++	if err != nil {
++		return nil, err
++	}
++
++	req.URL = url
++
++	return m.Transport.RoundTrip(req)
++}
++
++func Test_IPs(t *testing.T) {
++	setup()
++	defer teardown()
++
++	mux := http.NewServeMux()
++	server = httptest.NewServer(mux)
++	defer server.Close()
++
++	defaultTransport := http.DefaultTransport
++	http.DefaultTransport = &MockTransport{
++		Server: server,
++		Path:   "/ips",
++	}
++	defer func() { http.DefaultTransport = defaultTransport }()
++
++	mux.HandleFunc("/ips", func(w http.ResponseWriter, r *http.Request) {
++		assert.Equal(t, "GET", r.Method, "Expected method 'GET', got %s", r.Method)
++		w.Header().Set("Content-Type", "application/json")
++		fmt.Fprintf(w, `{
++  "success": true,
++  "errors": [],
++  "messages": [],
++  "result": {
++    "ipv4_cidrs": ["199.27.128.0/21"],
++    "ipv6_cidrs": ["ffff:ffff::/32"]
++  }
++}`)
++	})
++
++	ipRanges, err := IPs()
++
++	assert.NoError(t, err)
++
++	assert.Len(t, ipRanges.IPv4CIDRs, 1)
++	assert.Equal(t, "199.27.128.0/21", ipRanges.IPv4CIDRs[0])
++	assert.Len(t, ipRanges.IPv6CIDRs, 1)
++	assert.Equal(t, "ffff:ffff::/32", ipRanges.IPv6CIDRs[0])
++}
